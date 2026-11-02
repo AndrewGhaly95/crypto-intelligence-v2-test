@@ -4,6 +4,9 @@
 import pandas as pd
 import streamlit as st
 
+from historical_data import update_history, history_quality
+
+
 from market_candles import get_candles
 from backtest import backtest, Costs
 
