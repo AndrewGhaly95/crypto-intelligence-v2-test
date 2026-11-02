@@ -1,12 +1,11 @@
 
-"""Standalone Crypto Intelligence V2 research dashboard."""
+"""Crypto Intelligence V2: matched-period strategy comparison."""
 
 import pandas as pd
 import streamlit as st
 
 from market_candles import get_candles
 from backtest import backtest, Costs
-
 
 st.set_page_config(
     page_title="Crypto Intelligence V2",
@@ -15,11 +14,11 @@ st.set_page_config(
 )
 
 st.title("📈 Crypto Intelligence V2")
-st.caption("Experimental scalping and intraday backtesting")
+st.caption("Matched-period scalping and intraday research")
 
 st.warning(
-    "Research only. No real orders. Historical simulations "
-    "are not validated trading performance."
+    "Simulation only. No live orders. Historical results "
+    "do not establish future profitability."
 )
 
 coin = st.selectbox(
@@ -28,40 +27,28 @@ coin = st.selectbox(
 )
 
 count = st.slider(
-    "Historical candles",
-    min_value=100,
-    max_value=1000,
-    value=500,
-    step=100,
+    "Historical 5-minute candles",
+    100, 700, 500, 100,
 )
 
 st.subheader("Transaction costs")
 
 fee = st.number_input(
     "Fee per side (%)",
-    min_value=0.0,
-    max_value=5.0,
-    value=0.1,
-    step=0.05,
+    0.0, 5.0, 0.10, 0.05,
 )
 
 spread = st.number_input(
     "Round-trip spread (%)",
-    min_value=0.0,
-    max_value=5.0,
-    value=0.1,
-    step=0.05,
+    0.0, 5.0, 0.10, 0.05,
 )
 
 slippage = st.number_input(
     "Slippage per side (%)",
-    min_value=0.0,
-    max_value=5.0,
-    value=0.05,
-    step=0.05,
+    0.0, 5.0, 0.05, 0.05,
 )
 
-if st.button("Run strategy comparison", type="primary"):
+if st.button("Run matched-period comparison", type="primary"):
     try:
         costs = Costs(
             fee_per_side=fee / 100,
@@ -69,14 +56,39 @@ if st.button("Run strategy comparison", type="primary"):
             slippage_per_side=slippage / 100,
         )
 
+        five_min = get_candles(coin, "5m", count)
+        hourly = get_candles(coin, "1h", 100)
+
+        # The hourly candles must be fully contained
+        # within the available five-minute history.
+        start = five_min.index.min()
+        end = five_min.index.max() + pd.Timedelta(minutes=5)
+
+        hourly = hourly[
+            (hourly.index >= start)
+            & (
+                hourly.index + pd.Timedelta(hours=1)
+                <= end
+            )
+        ].copy()
+
+        if len(hourly) < 2:
+            st.error(
+                "Insufficient overlapping hourly candles. "
+                "Choose more five-minute candles."
+            )
+            st.stop()
+
+        st.caption(
+            f"5-minute period: {start} to {end} UTC"
+        )
+
         rows = []
 
-        for strategy, interval in [
-            ("Scalping", "5m"),
-            ("Intraday", "1h"),
+        for strategy, candles in [
+            ("Scalping", five_min),
+            ("Intraday", hourly),
         ]:
-            candles = get_candles(coin, interval, count)
-
             summary, trades, curve = backtest(
                 candles,
                 strategy,
@@ -88,7 +100,10 @@ if st.button("Run strategy comparison", type="primary"):
 
             with st.expander(f"{strategy} details"):
                 st.line_chart(curve["Equity AUD"])
-                st.dataframe(trades)
+                st.dataframe(
+                    trades,
+                    use_container_width=True,
+                )
 
         st.subheader("Strategy comparison")
 
@@ -98,12 +113,13 @@ if st.button("Run strategy comparison", type="primary"):
             use_container_width=True,
         )
 
-        st.caption(
-            "Strategies use different historical windows. "
-            "Results are not directly comparable until "
-            "matched-period testing is implemented."
+        st.info(
+            "Both strategies now use overlapping calendar "
+            "history. The sample is short and results "
+            "remain exploratory."
         )
 
     except Exception as exc:
         st.error("Backtest failed")
         st.caption(str(exc))
+
