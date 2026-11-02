@@ -13,6 +13,7 @@ from walk_forward import run_walk_forward, WalkForwardConfig
 from test_engine import run_checks
 from test_engine_v3 import run_v3_checks
 from backtest_v3 import run_backtest_v3, TradingCostsV3
+from test_multi_v25 import run_v25_checks
 
 
 
@@ -932,6 +933,36 @@ if st.button(
     except Exception as exc:
         st.error("Engine comparison could not complete.")
         st.code(str(exc))
+        
+st.divider()
+st.header("V2.5 Multi-Strategy Engine Validation")
+
+st.caption(
+    "Six deterministic tests of the multi-strategy "
+    "research backtesting engine."
+)
+
+if st.button(
+    "Run V2.5 validation",
+    type="primary",
+    key="v25_validation",
+):
+    results = run_v25_checks()
+
+    c1, c2 = st.columns(2)
+    c1.metric("Tests passed", results["passed"])
+    c2.metric("Total tests", results["total"])
+
+    if results["passed"] == results["total"]:
+        st.success("All six V2.5 checks passed.")
+    else:
+        st.error("V2.5 validation failed.")
+
+        for message in (
+            results["failures"] + results["errors"]
+        ):
+            st.code(message)
+
 
 
 
