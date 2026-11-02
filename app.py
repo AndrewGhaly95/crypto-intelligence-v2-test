@@ -11,6 +11,7 @@ from coinbase_history import get_coinbase_history
 from backtest_v2 import run_backtest, TradingCosts
 from walk_forward import run_walk_forward, WalkForwardConfig
 from test_engine import run_checks
+from test_engine_v3 import run_v3_checks
 
 
 
@@ -710,6 +711,54 @@ if st.button(
 
         for error in result["errors"]:
             st.code(error)
+            
+st.divider()
+st.header("V2.3 Advanced Execution Validation")
+
+st.caption(
+    "Six deterministic accounting and execution tests "
+    "for the V3 research backtesting engine."
+)
+
+if st.button(
+    "Run V3 validation",
+    type="primary",
+    key="run_v3_validation",
+):
+    try:
+        results = run_v3_checks()
+
+        c1, c2 = st.columns(2)
+
+        c1.metric(
+            "Tests passed",
+            results["passed"],
+        )
+
+        c2.metric(
+            "Total tests",
+            results["total"],
+        )
+
+        if results["passed"] == results["total"]:
+            st.success(
+                "All six V3 execution checks passed."
+            )
+        else:
+            st.error(
+                "V3 execution validation failed."
+            )
+
+            for failure in results["failures"]:
+                st.code(failure)
+
+            for error in results["errors"]:
+                st.code(error)
+
+    except Exception as exc:
+        st.error("Validation runner failed.")
+        st.code(str(exc))
+
 
 
 
