@@ -8,6 +8,9 @@ from historical_data import update_history, history_quality
 
 from coinbase_history import get_coinbase_history
 
+from backtest_v2 import run_backtest, TradingCosts
+
+
 
 
 from market_candles import get_candles
@@ -336,6 +339,160 @@ if st.button(
         )
 
         st.code(str(exc))
+        
+st.divider()
+st.header("V2.1 Validated Backtesting")
+
+st.caption(
+    "Research-only EMA20/EMA50 crossover backtest "
+    "using Coinbase USD market data. "
+    "No real trades are placed."
+)
+
+bt_coin = st.selectbox(
+    "Backtest cryptocurrency",
+    ["BTC", "ETH"],
+    key="v21_coin",
+)
+
+bt_days = st.selectbox(
+    "Backtest historical period",
+    [30, 90, 180],
+    index=1,
+    key="v21_days",
+)
+
+bt_allocation = st.slider(
+    "Capital allocation (%)",
+    min_value=10,
+    max_value=100,
+    value=50,
+    step=10,
+    key="v21_allocation",
+)
+
+if st.button(
+    "Run V2.1 backtest",
+    type="primary",
+    key="run_v21",
+):
+    try:
+        with st.spinner(
+            "Retrieving history and calculating backtest..."
+        ):
+            candles = get_coinbase_history(
+                symbol=bt_coin,
+                interval="1h",
+                days=bt_days,
+            )
+
+            missing = candles.attrs.get(
+                "missing_candles", 0
+            )
+
+            if missing:
+                raise ValueError(
+                    f"Dataset has {missing} missing candles. "
+                    "Backtest cancelled."
+                )
+
+            costs = TradingCosts(
+                fee_per_side=0.001,
+                slippage_per_side=0.0005,
+                spread_round_trip=0.001,
+            )
+
+            summary, trades, equity = run_backtest(
+                candles,
+                initial_cash=500.0,
+                allocation=bt_allocation / 100,
+                warmup=200,
+                costs=costs,
+            )
+
+        st.success("Backtest completed.")
+
+        st.subheader("Strategy Performance")
+
+        c1, c2 = st.columns(2)
+
+        c1.metric(
+            "Final Equity (USD)",
+            f"${summary['Final USD']:,.2f}",
+        )
+
+        c2.metric(
+            "Strategy Return",
+            f"{summary['Return %']:+.2f}%",
+        )
+
+        c3, c4 = st.columns(2)
+
+        c3.metric(
+            "Buy & Hold Return",
+            f"{summary['Buy and Hold Return %']:+.2f}%",
+        )
+
+        c4.metric(
+            "Maximum Drawdown",
+            f"{summary['Maximum Drawdown %']:.2f}%",
+        )
+
+        st.subheader("Trade Statistics")
+
+        st.write("Trades:", summary["Trades"])
+
+        st.write(
+            "Win rate:",
+            summary["Win Rate %"],
+        )
+
+        st.write(
+            "Profit factor:",
+            summary["Profit Factor"],
+        )
+
+        st.write(
+            "Trading fees (USD):",
+            summary["Fees USD"],
+        )
+
+        st.write(
+            "Spread and slippage (USD):",
+            summary["Spread and Slippage USD (approx)"],
+        )
+
+        st.write(
+            "Evaluation start:",
+            summary["Evaluation Start"],
+        )
+
+        st.write(
+            "Evaluation end:",
+            summary["Evaluation End"],
+        )
+
+        st.subheader("Equity Curve")
+
+        st.line_chart(equity["Equity USD"])
+
+        st.subheader("Trade Log")
+
+        if trades.empty:
+            st.info(
+                "No trades occurred during this period."
+            )
+        else:
+            st.dataframe(
+                trades,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    except Exception as exc:
+        st.error("Backtest failed.")
+        st.code(str(exc))
+
 
 
 
