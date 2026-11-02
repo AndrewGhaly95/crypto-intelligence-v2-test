@@ -1,134 +1,113 @@
 
-"""Historical market candle retrieval for Crypto Intelligence V2."""
+"""Historical candle retrieval for Crypto Intelligence V2."""
 
 import pandas as pd
 import requests
 
 
-BINANCE_URL = "https://api.binance.com/api/v3/klines"
+KRAKEN_URL = "https://api.kraken.com/0/public/OHLC"
 
 SUPPORTED_COINS = {
-    "BTC": "BTCUSDT",
-    "ETH": "ETHUSDT",
-    "SOL": "SOLUSDT",
-    "XRP": "XRPUSDT",
-    "BNB": "BNBUSDT",
+    "BTC": "XBTUSD",
+    "ETH": "ETHUSD",
+    "SOL": "SOLUSD",
+    "XRP": "XRPUSD",
+    "BNB": "BNBUSD",
 }
 
 SUPPORTED_INTERVALS = {
-    "1m",
-    "5m",
-    "15m",
-    "1h",
-    "4h",
+    "1m": 1,
+    "5m": 5,
+    "15m": 15,
+    "1h": 60,
+    "4h": 240,
 }
 
 
 def get_candles(symbol, interval="1h", limit=500):
-    """
-    Retrieve historical OHLCV candles from Binance.
-
-    Returns a pandas DataFrame with UTC timestamps.
-    The latest candle is excluded because it may
-    still be forming.
-    """
+    """Retrieve completed OHLCV candles from Kraken."""
 
     symbol = symbol.upper().strip()
 
     if symbol not in SUPPORTED_COINS:
-        raise ValueError(
-            f"Unsupported cryptocurrency: {symbol}"
-        )
+        raise ValueError(f"Unsupported coin: {symbol}")
 
     if interval not in SUPPORTED_INTERVALS:
-        raise ValueError(
-            f"Unsupported candle interval: {interval}"
-        )
+        raise ValueError(f"Unsupported interval: {interval}")
 
-    if not isinstance(limit, int) or not 1 <= limit <= 1000:
-        raise ValueError(
-            "Candle limit must be between 1 and 1000."
-        )
-
-    params = {
-        "symbol": SUPPORTED_COINS[symbol],
-        "interval": interval,
-        "limit": min(limit + 1, 1000),
-    }
+    if not isinstance(limit, int) or not 1 <= limit <= 719:
+        raise ValueError("Limit must be between 1 and 719.")
 
     response = requests.get(
-        BINANCE_URL,
-        params=params,
-        timeout=15,
+        KRAKEN_URL,
+        params={
+            "pair": SUPPORTED_COINS[symbol],
+            "interval": SUPPORTED_INTERVALS[interval],
+        },
+        timeout=20,
     )
 
     response.raise_for_status()
-    candles = response.json()
+    payload = response.json()
 
-    if not isinstance(candles, list) or not candles:
+    if payload.get("error"):
         raise ValueError(
-            "No valid market candle data returned."
+            f"Kraken API error: {payload['error']}"
         )
 
+    results = payload.get("result", {})
+
+    pair_keys = [
+        key for key in results
+        if key != "last"
+    ]
+
+    if not pair_keys:
+        raise ValueError("No market data returned.")
+
+    candles = results[pair_keys[0]]
+
     columns = [
-        "open_time",
+        "timestamp",
         "open",
         "high",
         "low",
         "close",
+        "vwap",
         "volume",
-        "close_time",
-        "quote_volume",
-        "number_of_trades",
-        "taker_buy_base_volume",
-        "taker_buy_quote_volume",
-        "ignore",
+        "count",
     ]
 
     data = pd.DataFrame(candles, columns=columns)
 
-    numeric_columns = [
+    data["timestamp"] = pd.to_datetime(
+        data["timestamp"],
+        unit="s",
+        utc=True,
+    )
+
+    for column in [
         "open",
         "high",
         "low",
         "close",
         "volume",
-    ]
-
-    for column in numeric_columns:
+    ]:
         data[column] = pd.to_numeric(
             data[column],
             errors="raise",
         )
 
-    data["timestamp"] = pd.to_datetime(
-        data["open_time"],
-        unit="ms",
-        utc=True,
-    )
+    # Kraken includes the current unfinished candle.
+    # Remove it to prevent look-ahead bias.
+    data = data.iloc[:-1].copy()
 
-    data["close_timestamp"] = pd.to_datetime(
-        data["close_time"],
-        unit="ms",
-        utc=True,
-    )
-
-    now = pd.Timestamp.now(tz="UTC")
-
-    # Only retain candles whose closing time has passed.
-    data = data[
-        data["close_timestamp"] < now
-    ].copy()
+    if data.empty:
+        raise ValueError("No completed candles available.")
 
     data = data.set_index("timestamp")
 
-    data = data[
-        numeric_columns
-    ].sort_index()
+    return data[
+        ["open", "high", "low", "close", "volume"]
+    ].sort_index().tail(limit)
 
-    if data.empty:
-        raise ValueError(
-            "No completed candles were available."
-        )
-
-    return data.tail(limit)
