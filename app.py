@@ -14,6 +14,8 @@ from test_engine import run_checks
 from test_engine_v3 import run_v3_checks
 from backtest_v3 import run_backtest_v3, TradingCostsV3
 from test_multi_v25 import run_v25_checks
+from backtest_multi_v25 import backtest_strategy_v25, CostsV25
+from strategies_v25 import STRATEGIES
 
 
 
@@ -962,6 +964,314 @@ if st.button(
             results["failures"] + results["errors"]
         ):
             st.code(message)
+
+# ==========================================================
+# V2.6 MULTI-ASSET STRATEGY COMPARISON
+# Research only — no real trades
+# ==========================================================
+
+st.divider()
+st.header("V2.6 Multi-Asset Strategy Research")
+
+st.caption(
+    "Compare four long-only strategies across BTC, ETH "
+    "and SOL using Coinbase Exchange USD data. "
+    "All capital and returns are simulated in USD."
+)
+
+v26_days = st.selectbox(
+    "Historical period (days)",
+    [90, 180],
+    index=0,
+    key="v26_days",
+)
+
+v26_train_pct = st.slider(
+    "Training proportion (%)",
+    min_value=50,
+    max_value=80,
+    value=65,
+    step=5,
+    key="v26_train_pct",
+)
+
+v26_allocation = st.slider(
+    "Capital allocation (%)",
+    min_value=10,
+    max_value=100,
+    value=50,
+    step=10,
+    key="v26_allocation",
+)
+
+v26_coins = st.multiselect(
+    "Cryptocurrencies",
+    ["BTC", "ETH", "SOL"],
+    default=["BTC", "ETH", "SOL"],
+    key="v26_coins",
+)
+
+if st.button(
+    "Run multi-asset research",
+    type="primary",
+    key="v26_run",
+):
+    if not v26_coins:
+        st.warning("Select at least one cryptocurrency.")
+    else:
+        results = []
+        failures = []
+        detailed_results = {}
+
+        costs = CostsV25(
+            fee_per_side=0.001,
+            slippage_per_side=0.0005,
+            spread_round_trip=0.001,
+        )
+
+        progress = st.progress(0)
+        total = len(v26_coins) * len(STRATEGIES)
+        completed = 0
+
+        for coin in v26_coins:
+            try:
+                history = get_coinbase_history(
+                    symbol=coin,
+                    interval="1h",
+                    days=v26_days,
+                )
+
+                if len(history) < 500:
+                    raise ValueError(
+                        "Insufficient historical candles."
+                    )
+
+                history = history.sort_index().copy()
+
+                if history.index.has_duplicates:
+                    raise ValueError(
+                        "Duplicate historical timestamps."
+                    )
+
+                # Require continuous hourly history.
+                expected_index = pd.date_range(
+                    start=history.index[0],
+                    end=history.index[-1],
+                    freq="h",
+                )
+
+                if not history.index.equals(expected_index):
+                    raise ValueError(
+                        "Missing or irregular hourly candles."
+                    )
+
+                split = int(
+                    len(history) * v26_train_pct / 100
+                )
+
+                # Training includes its own warm-up.
+                # Testing retains prior history for indicators.
+                test_start = history.index[split]
+                training = history.iloc[:split].copy()
+
+                for strategy in STRATEGIES:
+                    try:
+                        train_summary, train_trades, train_curve = (
+                            backtest_strategy_v25(
+                                training,
+                                strategy,
+                                initial_cash=500.0,
+                                allocation=v26_allocation / 100,
+                                warmup=200,
+                                costs=costs,
+                            )
+                        )
+
+                        test_summary, test_trades, test_curve = (
+                            backtest_strategy_v25(
+                                history,
+                                strategy,
+                                initial_cash=500.0,
+                                allocation=v26_allocation / 100,
+                                warmup=200,
+                                costs=costs,
+                                evaluation_start=test_start,
+                            )
+                        )
+
+                        row = {
+                            "Asset": coin,
+                            "Strategy": strategy,
+                            "Training Return %":
+                                train_summary["Return %"],
+                            "Testing Return %":
+                                test_summary["Return %"],
+                            "Testing Buy & Hold %":
+                                test_summary[
+                                    "Buy and Hold Return %"
+                                ],
+                            "Testing Excess Return %":
+                                round(
+                                    test_summary["Return %"]
+                                    - test_summary[
+                                        "Buy and Hold Return %"
+                                    ],
+                                    3,
+                                ),
+                            "Testing Drawdown %":
+                                test_summary[
+                                    "Maximum Drawdown %"
+                                ],
+                            "Testing Trades":
+                                test_summary["Trades"],
+                            "Testing Win Rate %":
+                                test_summary["Win Rate %"],
+                            "Testing Final USD":
+                                test_summary["Final USD"],
+                        }
+
+                        results.append(row)
+
+                        detailed_results[
+                            (coin, strategy)
+                        ] = {
+                            "training_trades": train_trades,
+                            "testing_trades": test_trades,
+                            "training_curve": train_curve,
+                            "testing_curve": test_curve,
+                        }
+
+                    except Exception as exc:
+                        failures.append(
+                            f"{coin} / {strategy}: {exc}"
+                        )
+
+                    completed += 1
+                    progress.progress(
+                        min(completed / total, 1.0)
+                    )
+
+            except Exception as exc:
+                failures.append(f"{coin}: {exc}")
+                completed += len(STRATEGIES)
+                progress.progress(
+                    min(completed / total, 1.0)
+                )
+
+        if failures:
+            st.warning(
+                f"{len(failures)} evaluation(s) "
+                "could not complete."
+            )
+            with st.expander("Evaluation errors"):
+                for failure in failures:
+                    st.write(failure)
+
+        if results:
+            table = pd.DataFrame(results)
+
+            st.success(
+                f"Completed {len(table)} "
+                "strategy/asset evaluations."
+            )
+
+            st.subheader("Out-of-Sample Performance")
+
+            st.dataframe(
+                table,
+                hide_index=True,
+                use_container_width=True,
+            )
+
+            st.subheader("Testing Return Comparison")
+
+            plot = table.pivot(
+                index="Strategy",
+                columns="Asset",
+                values="Testing Return %",
+            )
+
+            st.bar_chart(plot)
+
+            st.subheader("Testing Excess Return")
+
+            st.caption(
+                "Strategy return minus cost-adjusted "
+                "buy-and-hold return at the same allocation."
+            )
+
+            excess = table.pivot(
+                index="Strategy",
+                columns="Asset",
+                values="Testing Excess Return %",
+            )
+
+            st.bar_chart(excess)
+
+            st.subheader("Detailed Results")
+
+            selected_coin = st.selectbox(
+                "Inspect cryptocurrency",
+                sorted(table["Asset"].unique()),
+                key="v26_detail_coin",
+            )
+
+            available = table.loc[
+                table["Asset"] == selected_coin,
+                "Strategy",
+            ].tolist()
+
+            selected_strategy = st.selectbox(
+                "Inspect strategy",
+                available,
+                key="v26_detail_strategy",
+            )
+
+            detail = detailed_results[
+                (selected_coin, selected_strategy)
+            ]
+
+            st.write("Training equity")
+            st.line_chart(
+                detail["training_curve"]["Equity USD"]
+            )
+
+            st.write("Testing equity")
+            st.line_chart(
+                detail["testing_curve"]["Equity USD"]
+            )
+
+            with st.expander("Training trade log"):
+                st.dataframe(
+                    detail["training_trades"],
+                    hide_index=True,
+                    use_container_width=True,
+                )
+
+            with st.expander("Testing trade log"):
+                st.dataframe(
+                    detail["testing_trades"],
+                    hide_index=True,
+                    use_container_width=True,
+                )
+
+            st.info(
+                "These are preliminary chronological holdout "
+                "results, not independent rolling walk-forward "
+                "validation. Strategy signals are generated "
+                "using earlier historical candles, but the "
+                "current signal-state implementation still "
+                "requires additional scenario validation. "
+                "Do not interpret the rankings as live "
+                "trading recommendations."
+            )
+
+        else:
+            st.error(
+                "No evaluations completed successfully. "
+                "Inspect the evaluation errors above."
+            )
+
 
 
 
