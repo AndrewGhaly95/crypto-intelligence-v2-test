@@ -125,4 +125,81 @@ if st.button("Run matched-period comparison", type="primary"):
     except Exception as exc:
         st.error("Backtest failed")
         st.caption(str(exc))
+        
+st.divider()
+st.header("Historical Data Diagnostics")
+
+st.caption(
+    "Inspect available historical candles and identify "
+    "missing intervals before running longer backtests."
+)
+
+diagnostic_interval = st.selectbox(
+    "Diagnostic candle interval",
+    ["5m", "15m", "1h", "4h"],
+)
+
+if st.button("Update and inspect history"):
+    try:
+        with st.spinner("Retrieving historical candles..."):
+            history = update_history(
+                coin,
+                diagnostic_interval,
+                limit=700,
+            )
+
+            quality = history_quality(
+                history,
+                diagnostic_interval,
+            )
+
+        col1, col2, col3 = st.columns(3)
+
+        col1.metric(
+            "Candles",
+            quality["candles"],
+        )
+
+        col2.metric(
+            "Coverage",
+            f"{quality['coverage_pct']:.1f}%",
+        )
+
+        col3.metric(
+            "Missing intervals",
+            quality["missing_intervals"],
+        )
+
+        if quality["candles"] > 0:
+            st.write(
+                "First candle:",
+                quality["start"],
+            )
+
+            st.write(
+                "Last candle:",
+                quality["end"],
+            )
+
+            st.line_chart(
+                history["close"]
+            )
+
+            if quality["candles"] < 200:
+                st.warning(
+                    "Limited historical observations. "
+                    "Strategy indicators may not have "
+                    "adequate warm-up history."
+                )
+
+            st.info(
+                "Historical data is cached locally. "
+                "Streamlit Community Cloud may erase "
+                "this cache during app restarts."
+            )
+
+    except Exception as exc:
+        st.error("Historical data update failed")
+        st.caption(str(exc))
+
 
