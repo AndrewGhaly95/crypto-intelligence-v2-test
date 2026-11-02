@@ -12,6 +12,7 @@ from backtest_v2 import run_backtest, TradingCosts
 from walk_forward import run_walk_forward, WalkForwardConfig
 from test_engine import run_checks
 from test_engine_v3 import run_v3_checks
+from backtest_v3 import run_backtest_v3, TradingCostsV3
 
 
 
@@ -757,6 +758,179 @@ if st.button(
 
     except Exception as exc:
         st.error("Validation runner failed.")
+        st.code(str(exc))
+
+st.divider()
+st.header("V2.4 Backtesting Engine Comparison")
+
+st.caption(
+    "Research-only comparison of V2 and V3 using "
+    "the same Coinbase USD market data. "
+    "Different trading signals may produce different trades."
+)
+
+compare_coin = st.selectbox(
+    "Comparison cryptocurrency",
+    ["BTC", "ETH"],
+    key="v24_coin",
+)
+
+compare_days = st.selectbox(
+    "Comparison history (days)",
+    [90, 180],
+    index=0,
+    key="v24_days",
+)
+
+compare_allocation = st.slider(
+    "Comparison capital allocation (%)",
+    10, 100, 50, 10,
+    key="v24_allocation",
+)
+
+if st.button(
+    "Run V2 versus V3 comparison",
+    type="primary",
+    key="v24_run",
+):
+    try:
+        with st.spinner("Retrieving and evaluating history..."):
+            history = get_coinbase_history(
+                symbol=compare_coin,
+                interval="1h",
+                days=compare_days,
+            )
+
+            if history.attrs.get("missing_candles", 0):
+                raise ValueError(
+                    "Historical data contains missing candles."
+                )
+
+            common_costs = {
+                "fee_per_side": 0.001,
+                "slippage_per_side": 0.0005,
+                "spread_round_trip": 0.001,
+            }
+
+            v3_summary, v3_trades, v3_equity = (
+                run_backtest_v3(
+                    history,
+                    initial_cash=500.0,
+                    allocation=compare_allocation / 100,
+                    warmup=200,
+                    costs=TradingCostsV3(**common_costs),
+                )
+            )
+
+            # V2 uses its own validated backtesting function.
+            # Import here to keep the comparison self-contained.
+            from backtest_v2 import (
+                run_backtest,
+                TradingCosts,
+            )
+
+            v2_summary, v2_trades, v2_equity = (
+                run_backtest(
+                    history,
+                    initial_cash=500.0,
+                    allocation=compare_allocation / 100,
+                    warmup=200,
+                    costs=TradingCosts(**common_costs),
+                )
+            )
+
+        st.success("Comparison completed.")
+
+        def metric(summary, *names):
+            for name in names:
+                if name in summary:
+                    return summary[name]
+            return None
+
+        results = pd.DataFrame([
+            {
+                "Engine": "V2",
+                "Final USD": metric(
+                    v2_summary, "Final USD"
+                ),
+                "Return %": metric(
+                    v2_summary, "Return %"
+                ),
+                "Max Drawdown %": metric(
+                    v2_summary, "Maximum Drawdown %"
+                ),
+                "Trades": metric(
+                    v2_summary, "Trades"
+                ),
+                "Fees USD": metric(
+                    v2_summary, "Fees USD"
+                ),
+            },
+            {
+                "Engine": "V3",
+                "Final USD": metric(
+                    v3_summary, "Final USD"
+                ),
+                "Return %": metric(
+                    v3_summary, "Return %"
+                ),
+                "Max Drawdown %": metric(
+                    v3_summary, "Maximum Drawdown %"
+                ),
+                "Trades": metric(
+                    v3_summary, "Trades"
+                ),
+                "Fees USD": metric(
+                    v3_summary, "Fees USD"
+                ),
+            },
+        ])
+
+        st.subheader("Engine Performance")
+        st.dataframe(
+            results,
+            hide_index=True,
+            use_container_width=True,
+        )
+
+        st.subheader("V3 Performance")
+
+        c1, c2 = st.columns(2)
+        c1.metric(
+            "V3 final equity",
+            f"${v3_summary['Final USD']:,.2f}",
+        )
+        c2.metric(
+            "V3 return",
+            f"{v3_summary['Return %']:+.2f}%",
+        )
+
+        st.subheader("V3 Equity Curve")
+        st.line_chart(v3_equity["Equity USD"])
+
+        with st.expander("V2 trade log"):
+            st.dataframe(
+                v2_trades,
+                hide_index=True,
+                use_container_width=True,
+            )
+
+        with st.expander("V3 trade log"):
+            st.dataframe(
+                v3_trades,
+                hide_index=True,
+                use_container_width=True,
+            )
+
+        st.warning(
+            "This is a diagnostic comparison, not proof "
+            "of strategy superiority. Confirm the V2 and V3 "
+            "evaluation windows and trade rules before "
+            "interpreting performance differences."
+        )
+
+    except Exception as exc:
+        st.error("Engine comparison could not complete.")
         st.code(str(exc))
 
 
