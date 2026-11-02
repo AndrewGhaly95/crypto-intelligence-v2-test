@@ -9,6 +9,7 @@ from historical_data import update_history, history_quality
 from coinbase_history import get_coinbase_history
 
 from backtest_v2 import run_backtest, TradingCosts
+from walk_forward import run_walk_forward, WalkForwardConfig
 
 
 
@@ -492,6 +493,181 @@ if st.button(
     except Exception as exc:
         st.error("Backtest failed.")
         st.code(str(exc))
+        
+st.divider()
+st.header("V2.2 Walk-Forward Evaluation")
+
+st.caption(
+    "Chronological training and testing evaluation "
+    "of a fixed EMA20/EMA50 crossover strategy. "
+    "All results use simulated USD capital."
+)
+
+wf_coin = st.selectbox(
+    "Cryptocurrency",
+    ["BTC", "ETH"],
+    key="wf_coin",
+)
+
+wf_days = st.selectbox(
+    "Historical period (days)",
+    [90, 180],
+    index=0,
+    key="wf_days",
+)
+
+wf_train_pct = st.slider(
+    "Training proportion (%)",
+    min_value=50,
+    max_value=75,
+    value=65,
+    step=5,
+    key="wf_train_pct",
+)
+
+if st.button(
+    "Run chronological evaluation",
+    type="primary",
+    key="run_wf",
+):
+    try:
+        with st.spinner(
+            "Retrieving data and evaluating both periods..."
+        ):
+            wf_candles = get_coinbase_history(
+                symbol=wf_coin,
+                interval="1h",
+                days=wf_days,
+            )
+
+            missing = wf_candles.attrs.get(
+                "missing_candles", 0
+            )
+
+            if missing:
+                raise ValueError(
+                    f"{missing} missing hourly candles. "
+                    "Evaluation cancelled."
+                )
+
+            wf_config = WalkForwardConfig(
+                train_fraction=wf_train_pct / 100,
+                warmup_candles=200,
+                initial_cash=500.0,
+                allocation=0.5,
+            )
+
+            wf_results = run_walk_forward(
+                wf_candles,
+                config=wf_config,
+                costs=TradingCosts(
+                    fee_per_side=0.001,
+                    slippage_per_side=0.0005,
+                    spread_round_trip=0.001,
+                ),
+            )
+
+        st.success(
+            "Chronological evaluation completed."
+        )
+
+        st.write(
+            "Testing begins:",
+            wf_results["split_time"],
+        )
+
+        comparison = wf_results["comparison"]
+
+        columns_to_show = [
+            "Period",
+            "Initial USD",
+            "Final USD",
+            "Return %",
+            "Buy and Hold Return %",
+            "Maximum Drawdown %",
+            "Trades",
+            "Win Rate %",
+            "Profit Factor",
+            "Fees USD",
+        ]
+
+        st.subheader("Training vs Testing")
+
+        st.dataframe(
+            comparison[columns_to_show],
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        train_row = comparison.iloc[0]
+        test_row = comparison.iloc[1]
+
+        st.subheader("Testing Performance")
+
+        c1, c2 = st.columns(2)
+
+        c1.metric(
+            "Testing return",
+            f"{test_row['Return %']:+.2f}%",
+        )
+
+        c2.metric(
+            "Buy-and-hold return",
+            f"{test_row['Buy and Hold Return %']:+.2f}%",
+        )
+
+        c3, c4 = st.columns(2)
+
+        c3.metric(
+            "Testing trades",
+            int(test_row["Trades"]),
+        )
+
+        c4.metric(
+            "Testing drawdown",
+            f"{test_row['Maximum Drawdown %']:.2f}%",
+        )
+
+        st.subheader("Training Equity")
+
+        st.line_chart(
+            wf_results["train_equity"]["Equity USD"]
+        )
+
+        st.subheader("Testing Equity")
+
+        st.line_chart(
+            wf_results["test_equity"]["Equity USD"]
+        )
+
+        with st.expander("Training trade log"):
+            st.dataframe(
+                wf_results["train_trades"],
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        with st.expander("Testing trade log"):
+            st.dataframe(
+                wf_results["test_trades"],
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        st.info(
+            "This is a chronological holdout test, "
+            "not a fully independent or rolling "
+            "walk-forward validation. "
+            "The strategy parameters were fixed "
+            "before this run."
+        )
+
+    except Exception as exc:
+        st.error(
+            "Chronological evaluation failed."
+        )
+        st.code(str(exc))
+
 
 
 
