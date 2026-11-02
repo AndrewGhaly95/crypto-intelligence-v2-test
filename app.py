@@ -10,6 +10,7 @@ from coinbase_history import get_coinbase_history
 
 from backtest_v2 import run_backtest, TradingCosts
 from walk_forward import run_walk_forward, WalkForwardConfig
+from test_engine import run_checks
 
 
 
@@ -667,6 +668,49 @@ if st.button(
             "Chronological evaluation failed."
         )
         st.code(str(exc))
+        
+st.divider()
+st.header("V2.3 Execution Validation")
+
+st.caption(
+    "Automated checks of the research backtesting engine. "
+    "These tests do not place real trades."
+)
+
+if st.button(
+    "Run engine validation",
+    type="primary",
+    key="run_engine_validation",
+):
+    result = run_checks()
+
+    c1, c2 = st.columns(2)
+
+    c1.metric(
+        "Tests passed",
+        result["passed"],
+    )
+
+    c2.metric(
+        "Total tests",
+        result["total"],
+    )
+
+    if result["passed"] == result["total"]:
+        st.success(
+            "All current engine checks passed."
+        )
+    else:
+        st.error(
+            "One or more engine checks failed."
+        )
+
+        for failure in result["failures"]:
+            st.code(failure)
+
+        for error in result["errors"]:
+            st.code(error)
+
 
 
 
