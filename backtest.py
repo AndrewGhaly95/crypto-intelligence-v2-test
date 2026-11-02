@@ -1,14 +1,9 @@
 
-"""Historical backtesting engine for Crypto Intelligence V2.
-
-Research and simulation only. No real orders are placed.
-"""
+"""Conservative long-only OHLCV backtester. No real orders."""
 
 from dataclasses import dataclass
-
-import numpy as np
+import math
 import pandas as pd
-
 from strategies import signals
 
 
@@ -19,17 +14,20 @@ class Costs:
     spread_round_trip: float = 0.001
 
     def __post_init__(self):
-        for name in (
+        for key in (
             "fee_per_side",
             "slippage_per_side",
             "spread_round_trip",
         ):
-            value = getattr(self, name)
+            value = getattr(self, key)
+            if not math.isfinite(value) or not 0 <= value < 1:
+                raise ValueError(f"Invalid {key}")
 
-            if not np.isfinite(value) or not 0 <= value < 1:
-                raise ValueError(
-                    f"{name} must be between 0 and 1."
-                )
+        if (
+            self.spread_round_trip / 2
+            + self.slippage_per_side >= 1
+        ):
+            raise ValueError("Execution costs are excessive")
 
 
 def backtest(
@@ -41,257 +39,224 @@ def backtest(
     stop_pct=0.012,
     target_pct=0.024,
 ):
-    """
-    Run a long-only historical trading simulation.
-
-    Signals are calculated on completed candles.
-    Entries and signal-based exits occur at the
-    following candle's opening price.
-
-    Returns:
-        summary: dictionary of performance statistics
-        trades: DataFrame of completed trades
-        curve: DataFrame of simulated account equity
-    """
-
-    if costs is None:
-        costs = Costs()
+    costs = costs if costs is not None else Costs()
 
     if not isinstance(costs, Costs):
-        raise TypeError("costs must be a Costs instance.")
+        raise TypeError("costs must be Costs")
 
-    if not np.isfinite(initial_cash) or initial_cash <= 0:
-        raise ValueError("initial_cash must be positive.")
+    if not math.isfinite(initial_cash) or initial_cash <= 0:
+        raise ValueError("initial_cash must be positive")
 
-    if not np.isfinite(allocation) or not 0 < allocation <= 1:
-        raise ValueError("allocation must be between 0 and 1.")
+    if not math.isfinite(allocation) or not 0 < allocation <= 1:
+        raise ValueError("Invalid allocation")
 
-    if not 0 < stop_pct < 1:
-        raise ValueError("Invalid stop percentage.")
+    if not math.isfinite(stop_pct) or not 0 < stop_pct < 1:
+        raise ValueError("Invalid stop percentage")
 
-    if not 0 < target_pct < 1:
-        raise ValueError("Invalid target percentage.")
+    if not math.isfinite(target_pct) or not 0 < target_pct < 1:
+        raise ValueError("Invalid target percentage")
 
     data = signals(frame, strategy)
 
     if len(data) < 2:
-        raise ValueError(
-            "At least two candles are required."
-        )
+        raise ValueError("At least two candles required")
+
+    buy_factor = (
+        1
+        + costs.spread_round_trip / 2
+        + costs.slippage_per_side
+    )
+
+    sell_factor = (
+        1
+        - costs.spread_round_trip / 2
+        - costs.slippage_per_side
+    )
 
     cash = float(initial_cash)
-    quantity = 0.0
+    qty = 0.0
 
     entry_price = None
+    entry_cost = None
     entry_time = None
-    entry_cost = 0.0
 
-    trade_records = []
-    equity_records = []
+    trades = []
+    equity = []
 
-    # Half of the assumed round-trip spread per side.
-    half_spread = costs.spread_round_trip / 2.0
+    def sell(time, raw_price, reason):
+        nonlocal cash, qty
+        nonlocal entry_price, entry_cost, entry_time
 
-    buy_multiplier = (
-        1.0 + half_spread + costs.slippage_per_side
-    )
+        px = raw_price * sell_factor
 
-    sell_multiplier = (
-        1.0 - half_spread - costs.slippage_per_side
-    )
-
-    def close_position(timestamp, raw_price, reason):
-        nonlocal cash
-        nonlocal quantity
-        nonlocal entry_price
-        nonlocal entry_time
-        nonlocal entry_cost
-
-        execution_price = raw_price * sell_multiplier
-
-        gross_proceeds = quantity * execution_price
-        exit_fee = gross_proceeds * costs.fee_per_side
-        net_proceeds = gross_proceeds - exit_fee
-
-        cash += net_proceeds
-
-        pnl = net_proceeds - entry_cost
-
-        trade_records.append(
-            {
-                "Strategy": strategy,
-                "Entry Time": entry_time,
-                "Exit Time": timestamp,
-                "Entry Price": entry_price,
-                "Exit Price": execution_price,
-                "Quantity": quantity,
-                "PnL AUD": pnl,
-                "Return %": (
-                    pnl / entry_cost * 100
-                    if entry_cost > 0
-                    else 0.0
-                ),
-                "Exit Reason": reason,
-            }
+        proceeds = (
+            qty * px * (1 - costs.fee_per_side)
         )
 
-        quantity = 0.0
+        pnl = proceeds - entry_cost
+        cash += proceeds
+
+        trades.append({
+            "Strategy": strategy,
+            "Entry Time": entry_time,
+            "Exit Time": time,
+            "Entry Price": entry_price,
+            "Exit Price": px,
+            "Quantity": qty,
+            "PnL AUD": pnl,
+            "Return %": 100 * pnl / entry_cost,
+            "Exit Reason": reason,
+        })
+
+        qty = 0.0
         entry_price = None
+        entry_cost = None
         entry_time = None
-        entry_cost = 0.0
 
-    for i in range(len(data)):
-        timestamp = data.index[i]
-        candle = data.iloc[i]
+    for i, (time, bar) in enumerate(data.iterrows()):
+        op = float(bar["open"])
+        hi = float(bar["high"])
+        lo = float(bar["low"])
+        cl = float(bar["close"])
 
-        raw_open = float(candle["open"])
-        raw_high = float(candle["high"])
-        raw_low = float(candle["low"])
-        raw_close = float(candle["close"])
-
-        # Execute signals from the previous closed candle.
+        # Signals are acted upon at the next candle open.
         if i > 0:
-            previous = data.iloc[i - 1]
+            prev = data.iloc[i - 1]
 
-            if quantity > 0 and bool(previous["exit"]):
-                close_position(
-                    timestamp,
-                    raw_open,
-                    "Signal exit",
-                )
+            if qty > 0 and bool(prev["exit"]):
+                sell(time, op, "Signal exit")
 
-            elif quantity == 0 and bool(previous["entry"]):
+            elif qty == 0 and bool(prev["entry"]):
                 budget = cash * allocation
+                px = op * buy_factor
 
-                execution_price = (
-                    raw_open * buy_multiplier
+                new_qty = budget / (
+                    px * (1 + costs.fee_per_side)
                 )
 
-                # Budget includes the entry trading fee.
-                quantity = budget / (
-                    execution_price
-                    * (1.0 + costs.fee_per_side)
-                )
+                if new_qty > 0:
+                    qty = new_qty
+                    entry_price = px
+                    entry_cost = (
+                        qty
+                        * px
+                        * (1 + costs.fee_per_side)
+                    )
+                    entry_time = time
+                    cash -= entry_cost
 
-                entry_cost = (
-                    quantity
-                    * execution_price
-                    * (1.0 + costs.fee_per_side)
-                )
-
-                cash -= entry_cost
-
-                entry_price = execution_price
-                entry_time = timestamp
-
-        # Intracandle stop and target checks.
-        if quantity > 0:
-            stop_price = entry_price * (
-                1.0 - stop_pct
+        if qty > 0:
+            stop_bid = entry_price * (
+                1 - stop_pct
             )
 
-            target_price = entry_price * (
-                1.0 + target_pct
+            target_bid = entry_price * (
+                1 + target_pct
             )
 
-            # Conservative assumption when both levels
-            # are touched in the same candle: stop first.
-            if raw_low <= stop_price:
-                close_position(
-                    timestamp,
-                    min(raw_open, stop_price),
+            open_bid = op * sell_factor
+            low_bid = lo * sell_factor
+            high_bid = hi * sell_factor
+
+            # Opening gaps take precedence.
+            if open_bid <= stop_bid:
+                sell(time, op, "Stop gap/open")
+
+            elif open_bid >= target_bid:
+                sell(time, op, "Target gap/open")
+
+            # If both intrabar levels are reached,
+            # assume the stop is triggered first.
+            elif low_bid <= stop_bid:
+                sell(
+                    time,
+                    stop_bid / sell_factor,
                     "Stop loss",
                 )
 
-            elif raw_high >= target_price:
-                close_position(
-                    timestamp,
-                    max(raw_open, target_price),
+            elif high_bid >= target_bid:
+                sell(
+                    time,
+                    target_bid / sell_factor,
                     "Take profit",
                 )
 
-        equity = (
-            cash + quantity * raw_close * sell_multiplier
-            * (1.0 - costs.fee_per_side)
+        marked_equity = (
+            cash
+            + qty
+            * cl
+            * sell_factor
+            * (1 - costs.fee_per_side)
         )
 
-        equity_records.append(
-            {
-                "Timestamp": timestamp,
-                "Equity AUD": equity,
-            }
-        )
+        equity.append({
+            "Timestamp": time,
+            "Equity AUD": marked_equity,
+        })
 
-    # Close remaining positions at the final candle close.
-    if quantity > 0:
-        close_position(
+    if qty > 0:
+        sell(
             data.index[-1],
             float(data.iloc[-1]["close"]),
-            "End of backtest",
+            "End of test",
         )
 
-        equity_records[-1]["Equity AUD"] = cash
+        equity[-1]["Equity AUD"] = cash
 
-    trades = pd.DataFrame(
-        trade_records,
-        columns=[
-            "Strategy",
-            "Entry Time",
-            "Exit Time",
-            "Entry Price",
-            "Exit Price",
-            "Quantity",
-            "PnL AUD",
-            "Return %",
-            "Exit Reason",
-        ],
+    trade_columns = [
+        "Strategy",
+        "Entry Time",
+        "Exit Time",
+        "Entry Price",
+        "Exit Price",
+        "Quantity",
+        "PnL AUD",
+        "Return %",
+        "Exit Reason",
+    ]
+
+    trade_df = pd.DataFrame(
+        trades,
+        columns=trade_columns,
     )
 
-    curve = pd.DataFrame(equity_records).set_index(
+    curve = pd.DataFrame(equity).set_index(
         "Timestamp"
     )
 
-    final_equity = float(cash)
-
-    total_return = (
-        final_equity / initial_cash - 1.0
-    ) * 100.0
-
-    running_peak = curve["Equity AUD"].cummax()
-
-    drawdown = (
-        curve["Equity AUD"] / running_peak - 1.0
-    ) * 100.0
-
-    max_drawdown = float(drawdown.min())
-
-    total_trades = len(trades)
-
-    winning_trades = (
-        int((trades["PnL AUD"] > 0).sum())
-        if total_trades
-        else 0
+    peak = curve["Equity AUD"].cummax().clip(
+        lower=initial_cash
     )
 
-    win_rate = (
-        winning_trades / total_trades * 100.0
-        if total_trades
-        else 0.0
+    max_dd = float(
+        (
+            curve["Equity AUD"] / peak - 1
+        ).min() * 100
     )
 
     summary = {
         "Strategy": strategy,
         "Initial Capital AUD": initial_cash,
-        "Final Equity AUD": round(final_equity, 2),
+        "Final Equity AUD": round(cash, 2),
         "Net Profit AUD": round(
-            final_equity - initial_cash, 2
+            cash - initial_cash, 2
         ),
-        "Total Return %": round(total_return, 2),
-        "Maximum Drawdown %": round(
-            max_drawdown, 2
+        "Total Return %": round(
+            100 * (cash / initial_cash - 1), 2
         ),
-        "Trades": total_trades,
-        "Win Rate %": round(win_rate, 2),
+        "Maximum Drawdown %": round(max_dd, 2),
+        "Trades": len(trade_df),
+        "Win Rate %": (
+            round(
+                100 * (
+                    trade_df["PnL AUD"] > 0
+                ).mean(),
+                2,
+            )
+            if len(trade_df)
+            else 0.0
+        ),
     }
 
-    return summary, trades, curve
+    return summary, trade_df, curve
+
