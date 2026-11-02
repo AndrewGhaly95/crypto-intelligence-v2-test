@@ -6,6 +6,9 @@ import streamlit as st
 
 from historical_data import update_history, history_quality
 
+from coinbase_history import get_coinbase_history
+
+
 
 from market_candles import get_candles
 from backtest import backtest, Costs
@@ -201,5 +204,138 @@ if st.button("Update and inspect history"):
     except Exception as exc:
         st.error("Historical data update failed")
         st.caption(str(exc))
+        
+st.divider()
+
+st.header("Extended Historical Data")
+
+st.caption(
+    "Retrieve longer historical cryptocurrency datasets "
+    "from Coinbase Exchange. Prices are in USD."
+)
+
+history_coin = st.selectbox(
+    "Historical cryptocurrency",
+    ["BTC", "ETH"],
+    key="extended_history_coin",
+)
+
+history_interval = st.selectbox(
+    "Historical interval",
+    ["1h", "6h", "1d", "5m", "15m"],
+    key="extended_history_interval",
+)
+
+history_days = st.selectbox(
+    "Historical period (days)",
+    [30, 90, 180],
+    index=1,
+    key="extended_history_days",
+)
+
+if st.button(
+    "Retrieve extended history",
+    type="primary",
+    key="retrieve_extended_history",
+):
+    try:
+        with st.spinner(
+            "Downloading and validating historical candles..."
+        ):
+            historical = get_coinbase_history(
+                symbol=history_coin,
+                interval=history_interval,
+                days=history_days,
+            )
+
+        expected = historical.attrs.get(
+            "expected_candles", 0
+        )
+
+        missing = historical.attrs.get(
+            "missing_candles", 0
+        )
+
+        actual = len(historical)
+
+        coverage = (
+            100 * actual / expected
+            if expected
+            else 0
+        )
+
+        st.success(
+            "Historical data retrieval completed."
+        )
+
+        col1, col2, col3 = st.columns(3)
+
+        col1.metric(
+            "Candles retrieved",
+            f"{actual:,}",
+        )
+
+        col2.metric(
+            "Coverage",
+            f"{coverage:.2f}%",
+        )
+
+        col3.metric(
+            "Missing candles",
+            f"{missing:,}",
+        )
+
+        st.write(
+            "First candle:",
+            historical.index.min(),
+        )
+
+        st.write(
+            "Last candle:",
+            historical.index.max(),
+        )
+
+        st.write(
+            "Source: Coinbase Exchange"
+        )
+
+        st.write(
+            "Quote currency: USD"
+        )
+
+        st.line_chart(
+            historical["close"]
+        )
+
+        if missing:
+            st.warning(
+                "Missing candle intervals detected. "
+                "These must be reviewed before backtesting."
+            )
+
+        if actual < 200:
+            st.warning(
+                "Limited historical observations. "
+                "Indicator warm-up may be insufficient."
+            )
+
+        st.download_button(
+            "Download historical CSV",
+            data=historical.to_csv().encode("utf-8"),
+            file_name=(
+                f"{history_coin}_"
+                f"{history_interval}_"
+                f"{history_days}d.csv"
+            ),
+            mime="text/csv",
+        )
+
+    except Exception as exc:
+        st.error(
+            "Extended historical retrieval failed."
+        )
+
+        st.code(str(exc))
+
 
 
