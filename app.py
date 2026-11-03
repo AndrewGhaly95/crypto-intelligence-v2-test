@@ -1345,10 +1345,18 @@ if st.button(
                 days=v27_days,
             )
 
-            if history.attrs.get("missing_candles", 0):
-                raise ValueError(
-                    "Historical data contains missing candles."
-                )
+            missing = history.attrs.get("missing_candles", 0)
+
+st.write("Candles retrieved:", len(history))
+st.write("Missing candles reported:", missing)
+st.write("First candle:", history.index.min())
+st.write("Last candle:", history.index.max())
+
+if missing:
+    raise ValueError(
+        f"Historical data contains {missing} "
+        "missing candles. Evaluation cancelled."
+    )
 
             results = run_rolling_v27(
                 history,
