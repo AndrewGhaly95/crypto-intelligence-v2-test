@@ -1272,6 +1272,154 @@ if st.button(
                 "Inspect the evaluation errors above."
             )
 
+# ==========================================================
+# V2.7 ROLLING WALK-FORWARD RESEARCH
+# Research only - no live trading
+# ==========================================================
+
+from walk_forward_v27 import run_rolling_v27
+
+st.divider()
+st.header("V2.7 Rolling Walk-Forward Research")
+
+st.caption(
+    "Evaluate four long-only strategies across multiple "
+    "non-overlapping future testing windows. "
+    "Each window starts with fresh simulated USD capital."
+)
+
+st.warning(
+    "Research simulation only. Results are not evidence "
+    "of future profitability or executable CoinSpot returns."
+)
+
+v27_coin = st.selectbox(
+    "Research cryptocurrency",
+    ["BTC", "ETH", "SOL"],
+    key="v27_coin",
+)
+
+v27_days = st.selectbox(
+    "Historical data (days)",
+    [90, 180],
+    index=1,
+    key="v27_days",
+)
+
+v27_train = st.selectbox(
+    "Initial training history (days)",
+    [30, 45, 60],
+    index=1,
+    key="v27_train",
+)
+
+v27_test = st.selectbox(
+    "Testing window (days)",
+    [7, 15, 30],
+    index=1,
+    key="v27_test",
+)
+
+v27_allocation = st.slider(
+    "Capital allocation (%)",
+    min_value=10,
+    max_value=100,
+    value=50,
+    step=10,
+    key="v27_allocation",
+)
+
+if st.button(
+    "Run V2.7 rolling evaluation",
+    type="primary",
+    key="v27_run",
+):
+    try:
+        with st.spinner(
+            "Downloading historical data and "
+            "evaluating rolling testing windows..."
+        ):
+            history = get_coinbase_history(
+                symbol=v27_coin,
+                interval="1h",
+                days=v27_days,
+            )
+
+            if history.attrs.get("missing_candles", 0):
+                raise ValueError(
+                    "Historical data contains missing candles."
+                )
+
+            results = run_rolling_v27(
+                history,
+                train_days=v27_train,
+                test_days=v27_test,
+                allocation=v27_allocation / 100,
+                initial_cash=500.0,
+            )
+
+        st.success(
+            f"Completed {results['Fold'].nunique()} "
+            "testing windows across four strategies."
+        )
+
+        st.subheader("Individual Testing Windows")
+
+        st.dataframe(
+            results,
+            hide_index=True,
+            use_container_width=True,
+        )
+
+        st.subheader("Strategy Performance Summary")
+
+        summary = results.groupby("Strategy").agg(
+            Folds=("Fold", "count"),
+            Mean_Return=("Return %", "mean"),
+            Median_Return=("Return %", "median"),
+            Mean_Excess=("Excess Return %", "mean"),
+            Worst_Return=("Return %", "min"),
+            Best_Return=("Return %", "max"),
+            Total_Trades=("Trades", "sum"),
+        ).round(3)
+
+        st.dataframe(
+            summary,
+            use_container_width=True,
+        )
+
+        st.subheader("Return by Testing Window")
+
+        chart = results.pivot(
+            index="Fold",
+            columns="Strategy",
+            values="Return %",
+        )
+
+        st.line_chart(chart)
+
+        st.subheader("Testing Return Distribution")
+
+        st.bar_chart(
+            summary[[
+                "Mean_Return",
+                "Median_Return",
+            ]]
+        )
+
+        st.info(
+            "Testing windows are non-overlapping. "
+            "Each starts with US$500 and a flat position. "
+            "Returns are not compounded between windows. "
+            "Indicators use earlier historical candles, "
+            "but no future candles."
+        )
+
+    except Exception as exc:
+        st.error("V2.7 evaluation failed.")
+        st.code(str(exc))
+
+
 
 
 
